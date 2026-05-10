@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 数据库 (PostGIS)
+  # PostgreSQL
   postgres:
     image: postgis/postgis:15-3.3
     container_name: mta_v2_db
@@ -11,14 +11,25 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     ports:
-      - "${DB_PORT}:5432"  # 映射到宿主机 5433
+      - "${DB_PORT}:5432"
     volumes:
       - postgres_data_v2:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: mta_v2_redis
+    restart: always
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data_v2:/data
+
 volumes:
   postgres_data_v2:
+  redis_data_v2:

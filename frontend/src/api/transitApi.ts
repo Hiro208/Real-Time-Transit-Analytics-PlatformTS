@@ -55,6 +55,20 @@ export const fetchVehicleInsights = async (params: {
   return response.data.data;
 };
 
+export const fetchStopCoords = async (
+  stopId: string
+): Promise<{ stop_id: string; stop_name: string; lat: number; lon: number } | null> => {
+  try {
+    const response = await api.get<{
+      success: boolean;
+      data: { stop_id: string; stop_name: string; lat: number; lon: number };
+    }>(`/vehicles/stops/${encodeURIComponent(stopId)}`);
+    return response.data.data;
+  } catch {
+    return null;
+  }
+};
+
 export const register = async (email: string, password: string): Promise<{ token: string; user: User }> => {
   const response = await api.post<{ success: boolean; token: string; user: User }>(
     '/auth/register',

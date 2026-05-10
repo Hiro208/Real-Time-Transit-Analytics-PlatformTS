@@ -79,6 +79,7 @@ interface Props {
   comparisonDelta: number | null;
   comparisonPercent: number | null;
   topRoutes: Array<{ routeId: string; vehicleCount: number }>;
+  routeVehicleCounts: Record<string, number>;
   language: Language;
   onLanguageChange: (language: Language) => void;
   t: TranslateFn;
@@ -92,6 +93,8 @@ interface Props {
   favoriteRoutes: Set<string>;
   favoriteStops: FavoriteStop[];
   onToggleRouteFavorite: (routeId: string) => void;
+  onFocusFavoriteRoute: (routeId: string) => void;
+  onFocusFavoriteStop: (stop: FavoriteStop) => void;
   notificationCenter: NotificationItem[];
   notificationSettings: NotificationSettings | null;
   onToggleEmailNotifications: (enabled: boolean) => void;
@@ -114,6 +117,7 @@ const ControlPanel: React.FC<Props> = ({
   comparisonDelta,
   comparisonPercent,
   topRoutes,
+  routeVehicleCounts,
   language,
   onLanguageChange,
   t,
@@ -127,6 +131,8 @@ const ControlPanel: React.FC<Props> = ({
   favoriteRoutes,
   favoriteStops,
   onToggleRouteFavorite,
+  onFocusFavoriteRoute,
+  onFocusFavoriteStop,
   notificationCenter,
   notificationSettings,
   onToggleEmailNotifications,
@@ -136,10 +142,21 @@ const ControlPanel: React.FC<Props> = ({
 }) => {
   const [selectedNotification, setSelectedNotification] = React.useState<NotificationItem | null>(null);
   const [insightExpanded, setInsightExpanded] = React.useState(false);
+  const [chartView, setChartView] = React.useState({ start: 0, end: 1 });
+  const chartDragRef = React.useRef<{ dragging: boolean; lastClientX: number }>({
+    dragging: false,
+    lastClientX: 0,
+  });
   const [insightDropdownOpen, setInsightDropdownOpen] = React.useState({
     range: false,
     compare: false,
   });
+
+  React.useEffect(() => {
+    if (insightExpanded) {
+      setChartView({ start: 0, end: 1 });
+    }
+  }, [insightExpanded, timeRange, compareMode, selectedRoute]);
 
   const closeNotificationModal = () => setSelectedNotification(null);
   const sectionClass = 'mt-4 rounded-2xl border border-green-500/35 bg-black/35 p-4';
@@ -147,10 +164,29 @@ const ControlPanel: React.FC<Props> = ({
   const currentWindowPoints = trendSeries.map((p) => p.count);
   const previousWindowPoints = previousTrendSeries.map((p) => p.count);
   const chartPoints = currentWindowPoints.length > 1 ? currentWindowPoints : [count, count];
+  const chartTotal = chartPoints.length;
+  const minChartWindow = 0.15;
+  const clampedViewStart = Math.max(0, Math.min(chartView.start, 1 - minChartWindow));
+  const clampedViewEnd = Math.min(1, Math.max(chartView.end, clampedViewStart + minChartWindow));
+  const currentStartIdx = Math.floor(clampedViewStart * Math.max(chartTotal - 1, 1));
+  const currentEndIdx = Math.max(
+    currentStartIdx + 1,
+    Math.ceil(clampedViewEnd * Math.max(chartTotal - 1, 1))
+  );
+  const visibleChartPoints = chartPoints.slice(currentStartIdx, currentEndIdx + 1);
+  const visibleTrendSeries = trendSeries.slice(currentStartIdx, currentEndIdx + 1);
+  const previousTotal = previousWindowPoints.length;
+  const previousStartIdx = Math.floor(clampedViewStart * Math.max(previousTotal - 1, 1));
+  const previousEndIdx = Math.max(
+    previousStartIdx + 1,
+    Math.ceil(clampedViewEnd * Math.max(previousTotal - 1, 1))
+  );
+  const visiblePreviousPoints =
+    previousTotal > 1 ? previousWindowPoints.slice(previousStartIdx, previousEndIdx + 1) : [];
   const currentMinPoint = Math.min(...chartPoints);
   const currentMaxPoint = Math.max(...chartPoints);
-  const hasPreviousSeries = compareMode === 'previous' && previousWindowPoints.length > 1;
-  const yScalePoints = hasPreviousSeries ? [...chartPoints, ...previousWindowPoints] : chartPoints;
+  const hasPreviousSeries = compareMode === 'previous' && visiblePreviousPoints.length > 1;
+  const yScalePoints = hasPreviousSeries ? [...visibleChartPoints, ...visiblePreviousPoints] : visibleChartPoints;
   const minPoint = Math.min(...yScalePoints);
   const maxPoint = Math.max(...yScalePoints);
   const pointRange = Math.max(maxPoint - minPoint, 1);
@@ -169,12 +205,36 @@ const ControlPanel: React.FC<Props> = ({
   const anomalySet = new Set(anomalyIndexes);
   const peakIndex = chartPoints.findIndex((p) => p === currentMaxPoint);
   const troughIndex = chartPoints.findIndex((p) => p === currentMinPoint);
-  const topRouteSharePercent =
-    topRoutes.length > 0 && averageCount > 0
-      ? Math.round((topRoutes[0].vehicleCount / averageCount) * 100)
-      : null;
-  const trendSummaryKey =
-    startToNowDelta > 2 ? 'gettingBusier' : startToNowDelta < -2 ? 'gettingCalmer' : 'mostlyStable';
+  const favoriteRouteStats = Array.from(favoriteRoutes)
+    .sort()
+    .map((routeId) => ({
+      routeId,
+      vehicleCount: routeVehicleCounts[routeId] || 0,
+    }));
+  const activeFavoriteCount = favoriteRouteStats.filter((r) => r.vehicleCount > 0).length;
+  const networkSeverity: 'normal' | 'watch' | 'severe' =
+    anomalyIndexes.length >= 8 || (comparisonDelta ?? 0) >= 15
+      ? 'severe'
+      : anomalyIndexes.length >= 4 || (comparisonDelta ?? 0) >= 6
+      ? 'watch'
+      : 'normal';
+  const networkStatusView = {
+    normal: {
+      label: t('statusNormal'),
+      dotClass: 'bg-green-400',
+      textClass: 'text-green-200',
+    },
+    watch: {
+      label: t('statusWatch'),
+      dotClass: 'bg-yellow-300',
+      textClass: 'text-yellow-200',
+    },
+    severe: {
+      label: t('statusSevere'),
+      dotClass: 'bg-red-400',
+      textClass: 'text-red-200',
+    },
+  }[networkSeverity];
 
   const sparklinePath = chartPoints
     .map((point, idx) => {
@@ -185,22 +245,56 @@ const ControlPanel: React.FC<Props> = ({
     })
     .join(' ');
   const maxRouteCount = topRoutes.length > 0 ? Math.max(...topRoutes.map((r) => r.vehicleCount)) : 1;
-  const detailedPoints = chartPoints.map((point, idx) => {
-    const x = (idx / (chartPoints.length - 1 || 1)) * 100;
-    const y = 92 - ((point - minPoint) / pointRange) * 84;
-    return { idx, x, y, point };
+  const detailedChartWidth = 1000;
+  const detailedChartHeight = 280;
+  const detailedChartTop = 28;
+  const detailedChartBottom = 248;
+  const detailedChartInnerLeft = 70;
+  const detailedChartInnerRight = 980;
+  const detailedChartInnerWidth = Math.max(detailedChartInnerRight - detailedChartInnerLeft, 1);
+  const detailedChartRange = Math.max(detailedChartBottom - detailedChartTop, 1);
+  const detailedPoints = visibleChartPoints.map((point, idx) => {
+    const rawIdx = currentStartIdx + idx;
+    const x =
+      detailedChartInnerLeft +
+      (idx / (visibleChartPoints.length - 1 || 1)) * detailedChartInnerWidth;
+    const y = detailedChartBottom - ((point - minPoint) / pointRange) * detailedChartRange;
+    return { idx, rawIdx, x, y, point };
   });
-  const previousDetailedPoints = previousWindowPoints.map((point, idx) => {
-    const x = (idx / (previousWindowPoints.length - 1 || 1)) * 100;
-    const y = 92 - ((point - minPoint) / pointRange) * 84;
+  const previousDetailedPoints = visiblePreviousPoints.map((point, idx) => {
+    const x =
+      detailedChartInnerLeft +
+      (idx / (visiblePreviousPoints.length - 1 || 1)) * detailedChartInnerWidth;
+    const y = detailedChartBottom - ((point - minPoint) / pointRange) * detailedChartRange;
     return { idx, x, y, point };
   });
   const detailedPath = detailedPoints.map((p) => `${p.x},${p.y}`).join(' ');
   const previousDetailedPath = previousDetailedPoints.map((p) => `${p.x},${p.y}`).join(' ');
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = detailedChartBottom - ratio * detailedChartRange;
+    const value = Math.round(minPoint + ratio * (maxPoint - minPoint));
+    return { y, value };
+  });
+  const pointDisplayIndexes = new Set<number>();
+  for (let i = 0; i < visibleChartPoints.length; i++) {
+    const current = visibleChartPoints[i];
+    const prev = i > 0 ? visibleChartPoints[i - 1] : current;
+    const next = i < visibleChartPoints.length - 1 ? visibleChartPoints[i + 1] : current;
+    const isEdge = i === 0 || i === visibleChartPoints.length - 1;
+    const isChangePoint = current !== prev || current !== next;
+    if (isEdge || isChangePoint) {
+      pointDisplayIndexes.add(i);
+    }
+  }
   const formatSigned = (value: number) => (value >= 0 ? `+${value}` : `${value}`);
   const tickIndices = (() => {
-    if (trendSeries.length <= 1) return [0];
-    const raw = [0, Math.floor((trendSeries.length - 1) / 3), Math.floor(((trendSeries.length - 1) * 2) / 3), trendSeries.length - 1];
+    if (visibleTrendSeries.length <= 1) return [0];
+    const raw = [
+      0,
+      Math.floor((visibleTrendSeries.length - 1) / 3),
+      Math.floor(((visibleTrendSeries.length - 1) * 2) / 3),
+      visibleTrendSeries.length - 1,
+    ];
     return Array.from(new Set(raw));
   })();
   const formatTickTime = (ts?: number) => {
@@ -435,12 +529,15 @@ const ControlPanel: React.FC<Props> = ({
                       Array.from(favoriteRoutes)
                         .sort()
                         .map((r) => (
-                          <span
+                          <button
                             key={r}
+                            type="button"
+                            onClick={() => onFocusFavoriteRoute(r)}
                             className="rounded-lg border border-yellow-500/35 bg-yellow-400/15 px-2 py-1 text-yellow-100"
+                            title={`Focus ${r}`}
                           >
                             {r}
-                          </span>
+                          </button>
                         ))
                     ) : (
                       <span className="text-gray-500">{t('noFavoriteRoutes')}</span>
@@ -451,7 +548,17 @@ const ControlPanel: React.FC<Props> = ({
                   <div className="mb-1 text-[11px] uppercase tracking-wide text-gray-400">{t('stops')}</div>
                   <div className="max-h-20 space-y-1 overflow-auto pr-1 text-yellow-100/90">
                     {favoriteStops.length > 0 ? (
-                      favoriteStops.map((s) => <div key={s.stop_id}>{s.stop_name || s.stop_id}</div>)
+                      favoriteStops.map((s) => (
+                        <button
+                          key={s.stop_id}
+                          type="button"
+                          onClick={() => onFocusFavoriteStop(s)}
+                          className="block w-full rounded-md border border-white/10 bg-black/20 px-2 py-1 text-left transition hover:bg-black/35"
+                          title={`Focus ${s.stop_id}`}
+                        >
+                          {s.stop_name || s.stop_id}
+                        </button>
+                      ))
                     ) : (
                       <div className="text-gray-500">{t('noFavoriteStops')}</div>
                     )}
@@ -598,7 +705,6 @@ const ControlPanel: React.FC<Props> = ({
             <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-green-500/20 bg-neutral-950/95 px-5 py-4 backdrop-blur">
               <div>
                 <h3 className="text-xl font-bold">{t('detailedInsights')}</h3>
-                <div className="mt-1 text-sm text-gray-300">{t('trendSummary')}: {t(trendSummaryKey)}</div>
               </div>
               <button
                 type="button"
@@ -610,7 +716,14 @@ const ControlPanel: React.FC<Props> = ({
             </div>
 
             <div className="space-y-4 px-5 py-4">
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+                <div className="rounded-xl border border-green-500/25 bg-black/30 p-3">
+                  <div className="text-[11px] uppercase tracking-wide text-gray-400">{t('networkStatus')}</div>
+                  <div className={`mt-2 inline-flex items-center gap-2 text-xl font-extrabold ${networkStatusView.textClass}`}>
+                    <span className={`h-3 w-3 rounded-full ${networkStatusView.dotClass}`} />
+                    {networkStatusView.label}
+                  </div>
+                </div>
                 <div className="rounded-xl border border-green-500/25 bg-black/30 p-3">
                   <div className="text-[11px] uppercase tracking-wide text-gray-400">{t('currentSnapshot')}</div>
                   <div className="mt-1 text-2xl font-extrabold text-green-200">{latestPoint}</div>
@@ -641,9 +754,59 @@ const ControlPanel: React.FC<Props> = ({
                   <span>{t('insightWindow')}</span>
                   <span>{t('windowAvg')}: {averageCount}</span>
                 </div>
-                <div className="h-64 rounded-lg border border-green-500/20 bg-black/40 p-2">
+                <div
+                  className="h-64 rounded-lg border border-green-500/20 bg-black/40 p-2"
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pointerRatio = Math.max(0, Math.min((e.clientX - rect.left) / rect.width, 1));
+                    const currentWidth = clampedViewEnd - clampedViewStart;
+                    const zoomFactor = e.deltaY < 0 ? 0.88 : 1.12;
+                    const nextWidth = Math.max(minChartWindow, Math.min(1, currentWidth * zoomFactor));
+                    const pointerValue = clampedViewStart + pointerRatio * currentWidth;
+                    let nextStart = pointerValue - pointerRatio * nextWidth;
+                    let nextEnd = nextStart + nextWidth;
+                    if (nextStart < 0) {
+                      nextStart = 0;
+                      nextEnd = nextWidth;
+                    }
+                    if (nextEnd > 1) {
+                      nextEnd = 1;
+                      nextStart = 1 - nextWidth;
+                    }
+                    setChartView({ start: nextStart, end: nextEnd });
+                  }}
+                  onMouseDown={(e) => {
+                    chartDragRef.current = { dragging: true, lastClientX: e.clientX };
+                  }}
+                  onMouseMove={(e) => {
+                    if (!chartDragRef.current.dragging) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const dxRatio = (e.clientX - chartDragRef.current.lastClientX) / rect.width;
+                    chartDragRef.current.lastClientX = e.clientX;
+                    const width = clampedViewEnd - clampedViewStart;
+                    let nextStart = clampedViewStart - dxRatio * width;
+                    let nextEnd = clampedViewEnd - dxRatio * width;
+                    if (nextStart < 0) {
+                      nextStart = 0;
+                      nextEnd = width;
+                    }
+                    if (nextEnd > 1) {
+                      nextEnd = 1;
+                      nextStart = 1 - width;
+                    }
+                    setChartView({ start: nextStart, end: nextEnd });
+                  }}
+                  onMouseUp={() => {
+                    chartDragRef.current.dragging = false;
+                  }}
+                  onMouseLeave={() => {
+                    chartDragRef.current.dragging = false;
+                  }}
+                  style={{ cursor: chartDragRef.current.dragging ? 'grabbing' : 'grab' }}
+                >
                   <svg
-                    viewBox="0 0 100 100"
+                    viewBox={`0 0 ${detailedChartWidth} ${detailedChartHeight}`}
                     preserveAspectRatio="none"
                     className="h-full w-full"
                   >
@@ -653,10 +816,22 @@ const ControlPanel: React.FC<Props> = ({
                         <stop offset="100%" stopColor="rgba(74,222,128,1)" />
                       </linearGradient>
                     </defs>
+                    {yTicks.map((tick) => (
+                      <line
+                        key={`grid-${tick.y}`}
+                        x1={detailedChartInnerLeft}
+                        y1={tick.y}
+                        x2={detailedChartInnerRight}
+                        y2={tick.y}
+                        stroke="rgba(148,163,184,0.35)"
+                        strokeWidth="1.2"
+                        strokeDasharray="6 8"
+                      />
+                    ))}
                     <polyline
                       fill="none"
                       stroke="url(#trendStrokeDetailed)"
-                      strokeWidth="2.4"
+                      strokeWidth="2.8"
                       strokeLinejoin="round"
                       strokeLinecap="round"
                       points={detailedPath}
@@ -665,23 +840,56 @@ const ControlPanel: React.FC<Props> = ({
                       <polyline
                         fill="none"
                         stroke="rgba(148,163,184,0.9)"
-                        strokeWidth="1.8"
+                        strokeWidth="2.1"
                         strokeLinejoin="round"
                         strokeLinecap="round"
-                        strokeDasharray="2 2"
+                        strokeDasharray="6 8"
                         points={previousDetailedPath}
                       />
                     ) : null}
-                    {detailedPoints.map((p, idx) => (
+                    {detailedPoints
+                      .filter((_, idx) => pointDisplayIndexes.has(idx))
+                      .map((p, idx) => (
                       <circle
-                        key={`${p.idx}-${p.point}`}
+                        key={`${p.idx}-${p.point}-${idx}`}
                         cx={p.x}
                         cy={p.y}
-                        r={1.1}
-                        fill={anomalySet.has(idx) ? '#f87171' : '#4ade80'}
+                        r={4.2}
+                        fill="#4ade80"
+                        stroke="rgba(2,6,23,0.95)"
+                        strokeWidth="1.5"
                       />
                     ))}
-                    <line x1={0} y1={95} x2={100} y2={95} stroke="rgba(148,163,184,0.45)" strokeWidth="0.5" />
+                    <line
+                      x1={detailedChartInnerLeft}
+                      y1={detailedChartBottom + 12}
+                      x2={detailedChartInnerRight}
+                      y2={detailedChartBottom + 12}
+                      stroke="rgba(148,163,184,0.45)"
+                      strokeWidth="1.2"
+                    />
+                    <text
+                      x={10}
+                      y={14}
+                      fill="rgba(148,163,184,0.85)"
+                      fontSize="11"
+                      fontWeight="600"
+                    >
+                      Y: Active Vehicles
+                    </text>
+                    {yTicks.map((tick) => (
+                      <text
+                        key={`y-label-${tick.y}`}
+                        x={detailedChartInnerLeft - 12}
+                        y={tick.y + 4}
+                        textAnchor="end"
+                        fill="rgba(148,163,184,0.85)"
+                        fontSize="12"
+                        style={{ fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {tick.value}
+                      </text>
+                    ))}
                   </svg>
                 </div>
                 <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-slate-300">
@@ -691,10 +899,11 @@ const ControlPanel: React.FC<Props> = ({
                       className="select-none"
                       style={{ fontVariantNumeric: 'tabular-nums' }}
                     >
-                      {formatTickTime(trendSeries[tickIdx]?.ts)}
+                      {formatTickTime(visibleTrendSeries[tickIdx]?.ts)}
                     </span>
                   ))}
                 </div>
+                <div className="mt-1 text-[11px] text-slate-400">X: Time</div>
               </div>
 
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -723,39 +932,27 @@ const ControlPanel: React.FC<Props> = ({
                   )}
                 </div>
                 <div className="rounded-xl border border-green-500/25 bg-black/25 p-3 text-sm text-gray-200">
-                  <div className="text-xs uppercase tracking-wide text-gray-400">{t('trendSummary')}</div>
-                  <div className="mt-2">{t(trendSummaryKey)}</div>
-                  <div className="mt-2 flex items-center gap-3 text-xs">
-                    <span className="inline-flex items-center gap-1 text-green-300">
-                      <span className="h-2 w-2 rounded-full bg-green-300" />
-                      {t('currentWindow')}
-                    </span>
-                    {hasPreviousSeries ? (
-                      <span className="inline-flex items-center gap-1 text-slate-300">
-                        <span className="h-[2px] w-3 bg-slate-300" />
-                        {t('previousWindow')}
-                      </span>
-                    ) : null}
-                  </div>
+                  <div className="text-xs uppercase tracking-wide text-gray-400">{t('favoriteRoutesNow')}</div>
                   <div className="mt-2 text-xs text-gray-300">
-                    {comparisonDelta == null
-                      ? t('noComparisonData')
-                      : `${formatSigned(comparisonDelta)} ${t('vsPrevious')}${
-                          comparisonPercent != null ? ` (${formatSigned(comparisonPercent)}%)` : ''
-                        }`}
+                    {activeFavoriteCount} {t('routesWithService')}
                   </div>
-                  <div className="mt-2 text-xs text-gray-300">
-                    {t('windowAvg')}: {averageCount}
+                  <div className="mt-3 space-y-2">
+                    {favoriteRouteStats.length > 0 ? (
+                      favoriteRouteStats.map((route) => (
+                        <div key={`fav-${route.routeId}`} className="flex items-center justify-between rounded-lg border border-white/10 bg-black/25 px-2 py-1.5 text-xs">
+                          <span className="font-semibold text-green-200">{route.routeId}</span>
+                          <span className={route.vehicleCount > 0 ? 'text-green-300' : 'text-gray-500'}>
+                            {route.vehicleCount}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-gray-500">{t('noFavoriteRoutes')}</div>
+                    )}
                   </div>
-                  <div className="mt-2 text-xs text-gray-300">
-                    {t('peakValue')}: {currentMaxPoint} ({t('samplePoint')} {peakIndex + 1}) | {t('troughValue')}: {currentMinPoint} ({t('samplePoint')} {troughIndex + 1})
-                  </div>
-                  <div className="mt-2 text-xs text-gray-300">
-                    {t('topRouteShare')}: {topRouteSharePercent == null ? '--' : `${topRouteSharePercent}%`}
-                  </div>
-                  <div className="mt-2 text-xs text-gray-300">
-                    {t('anomalyPoints')}: {anomalyIndexes.length} ({t('anomalyHint')})
-                  </div>
+                  {favoriteRouteStats.length > 0 && activeFavoriteCount === 0 ? (
+                    <div className="mt-3 text-xs text-yellow-200/80">{t('noActiveFavoriteRoutes')}</div>
+                  ) : null}
                 </div>
               </div>
             </div>

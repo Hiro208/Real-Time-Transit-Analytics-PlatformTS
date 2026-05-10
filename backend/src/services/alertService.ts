@@ -120,6 +120,9 @@ export class AlertService {
       await AlertRepository.upsertBatch(parsed);
       const newNotifications = await NotificationRepository.createFromAlerts();
       await NotificationDispatchService.dispatchNewNotifications(newNotifications);
+      // Retry a small batch to avoid SMTP provider auth throttling.
+      const pendingEmailNotifications = await NotificationRepository.listUnsentEmail(5);
+      await NotificationDispatchService.dispatchNewNotifications(pendingEmailNotifications);
       console.log(`🚨 服务告警同步完成，共 ${parsed.length} 条`);
     } catch (e: any) {
       console.error('❌ 服务告警同步失败:', e.message);

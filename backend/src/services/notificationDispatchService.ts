@@ -17,6 +17,11 @@ function getMailer() {
   });
 }
 
+function sanitizeMailHeader(value: string): string {
+  // SMTP headers (e.g. Subject) cannot contain CR/LF.
+  return value.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export class NotificationDispatchService {
   static async dispatchNewNotifications(notifications: NotificationRow[]): Promise<void> {
     if (notifications.length === 0) return;
@@ -38,17 +43,25 @@ export class NotificationDispatchService {
         const user = await UserRepository.findById(userId);
         if (user?.email) {
           const sentIds: number[] = [];
+          let shouldStopCurrentBatch = false;
           for (const n of userNotifications) {
+            if (shouldStopCurrentBatch) break;
             try {
+              const safeTitle = sanitizeMailHeader(n.title || 'Service Alert');
               await mailer.sendMail({
                 from: env.SMTP_FROM,
                 to: user.email,
-                subject: `[MTA Alert] ${n.title}`,
+                subject: `[MTA Alert] ${safeTitle}`,
                 text: `${n.title}\n\n${n.body || ''}\n\nEffect: ${n.effect_text || 'N/A'}`,
               });
               sentIds.push(n.id);
-            } catch (e) {
-              // ignore email failure
+            } catch (e: any) {
+              const message = e?.message || 'unknown error';
+              console.error(`❌ 邮件发送失败 notification#${n.id} -> ${user.email}: ${message}`);
+              if (/too many login attempts|454-4\.7\.0/i.test(message)) {
+                // Gmail auth is rate-limited; stop this batch and let next cron retry.
+                shouldStopCurrentBatch = true;
+              }
             }
           }
           await NotificationRepository.markEmailSent(sentIds);

@@ -74,6 +74,18 @@ export class NotificationRepository {
     await query(sql, [notificationIds]);
   }
 
+  static async listUnsentEmail(limit = 200): Promise<NotificationRow[]> {
+    const sql = `
+      SELECT *
+      FROM notifications
+      WHERE email_sent = false
+      ORDER BY created_at ASC
+      LIMIT $1
+    `;
+    const result = await query<NotificationRow>(sql, [limit]);
+    return result.rows;
+  }
+
   static async markWebPushSent(notificationIds: number[]): Promise<void> {
     if (notificationIds.length === 0) return;
     const sql = `
